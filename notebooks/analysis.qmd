@@ -1,0 +1,271 @@
+---
+title: "Assignment A1 - MSG400"
+author: "Almida Thörjesson"
+format: html
+editor: visual
+---
+
+# Assignment A1 - MSG400
+
+## Exercise (i)
+
+```{r}
+#laddar in paket
+install.packages("chron")
+library(chron)
+```
+
+```{r}
+#läser in datan
+bikesharing <- read.csv("bikesharing.csv", header=TRUE)
+bikesharing <- data.frame(bikesharing)
+```
+
+```{r}
+#konvertera timestamp till ett "datum/tid-objekt"
+bikesharing$timestamp <- as.chron(bikesharing$timestamp)
+
+#skapa en ny variabel för timmar
+bikesharing$hrs <- hours(bikesharing$timestamp)
+```
+
+```{r}
+#årstider
+bikesharing$season <- factor(bikesharing$season,
+                             levels = c(0,1,2,3),
+                             labels = c("spring","summer","fall","winter"))
+
+#helgdag
+bikesharing$is_holiday <- factor(bikesharing$is_holiday,
+                                 levels = c(0,1),
+                                 labels = c("nonholiday","holiday"))
+
+#helg vs vardag
+bikesharing$is_weekend <- factor(bikesharing$is_weekend,
+                                 levels = c(0,1),
+                                 labels = c("weekday","weekend"))
+
+#väder
+bikesharing$weather_code <- factor(bikesharing$weather_code,
+                                   levels = c(1,2,3,4,7,10,26,94),
+                                   labels = c("clear","semiclear","brkclouds","cloudy",
+                                              "lghtrain","thunderstorm","snow","freezing"))
+
+```
+
+```{r}
+#Boxplot antal cyklar per säsong
+boxplot(cnt ~ season, data = bikesharing,
+        main = "Number of bike rentals per season",
+        xlab = "Season",
+        ylab = "Number of rentals",
+       col = c("lightblue","lightgreen","orange","lightpink"))
+
+#Boxplot antal cyklar per timme
+boxplot(cnt ~ hrs, data = bikesharing,
+        main = "Number of bike rentals per hour",
+        xlab = "Hour of the day",
+        ylab = "Numbers of rentals",
+        col = "lightgreen")
+
+```
+
+## Exercise (ii)
+
+```{r}
+#Exkludera rusningstimmar (7–9 och 17–18)
+data_norush <- subset(bikesharing, !(hrs >= 7 & hrs <= 9) & !(hrs >= 17 & hrs <= 18))
+
+#Endast våren (spring)
+data_norush_spring <- subset(data_norush, season == "spring")
+
+#Kolla antal rader/kolumner
+dim(data_norush_spring)  
+```
+
+```{r}
+#Anpassa enkel linjär modell
+m1 <- lm(cnt + 1 ~ hum, data = data_norush_spring)
+
+#Box-Cox-analys
+library(MASS)
+bc <- boxcox(m1, lambda = seq(-2, 2, 0.1))  
+
+#Hitta bästa lambda
+bc_df <- data.frame(lambda = bc$x, loglik = bc$y)
+best_lambda <- bc_df$lambda[which.max(bc_df$loglik)]
+best_lambda
+
+```
+
+```{r}
+#skapa transformerad respons baserat på lambda
+lambda <- best_lambda
+if (abs(lambda) < 1e-5) {
+  
+  data_norush_spring$y_trans <- log(data_norush_spring$cnt + 1)
+} else {
+ 
+  data_norush_spring$y_trans <- ((data_norush_spring$cnt + 1)^lambda - 1) / lambda
+}
+
+#Fit med transformerad respons
+m2 <- lm(y_trans ~ hum, data = data_norush_spring)
+summary(m2)
+
+```
+
+```{r}
+#transformerad respons vs humidity
+plot(data_norush_spring$hum, data_norush_spring$y_trans,
+     main = "Transformerad respons vs. humidity",
+     xlab = "Humidity (%)", ylab = "Transformerad respons",
+     pch = 20, col = rgb(0,0,1,0.3))
+
+#residualer vs humidity
+plot(data_norush_spring$hum, residuals(m2),
+     main = "Residualer vs. humidity",
+     xlab = "Humidity (%)", ylab = "Residualer",
+     pch = 20, col = rgb(1,0,0,0.3))
+abline(h = 0, col = "blue", lty = 2)
+
+```
+
+## Exercise (iii)
+
+```{r}
+set.seed(321)
+
+#Skatta parametrar från modellen i (ii)
+beta0 <- coef(m2)[1]
+beta1 <- coef(m2)[2]
+
+#Skatta residualstandardavvikelsen (s)
+s <- summary(m2)$sigma
+
+#Antal simuleringar
+B <- 2000
+
+#Humidity-värde
+hum_val <- 40
+
+#Simulera nya observationer av transformerad respons
+eps_new <- rnorm(B, mean = 0, sd = s)
+y_trans_new <- beta0 + beta1 * hum_val + eps_new
+
+#Transformera tillbaka till originalskalan
+if (abs(lambda) < 1e-5) {
+
+  y_new <- exp(y_trans_new) - 1
+} else {
+  
+  y_new <- (y_trans_new * lambda + 1)^(1/lambda) - 1
+}
+
+#95% prediktionsintervall
+PI <- quantile(y_new, probs = c(0.025, 0.975))
+PI
+
+```
+
+## Exercise (iv)
+
+```{r}
+set.seed(321)
+
+#Antal observationer
+N <- nrow(data_norush_spring)
+
+# Skapa tränings- och testmängder (80/20 split)
+n_train <- floor(0.8 * N)
+ind_train <- sample(1:N, n_train)
+train <- data_norush_spring[ind_train, ]
+test  <- data_norush_spring[-ind_train, ]
+
+#Värden på gamma att testa
+gammas <- seq(0.5, 2.0, by = 0.1)
+
+#Spara resultat
+sqrt_pMSE <- numeric(length(gammas))
+
+for (i in seq_along(gammas)) {
+  g <- gammas[i]
+  
+#Fit modell på träningsdata
+  fit <- lm(y_trans ~ I(hum^g), data = train)
+  
+#Prediktion på testdata
+  y_pred <- predict(fit, newdata = data.frame(hum = test$hum))
+  
+#Beräkna pMSE
+  mse <- mean((test$y_trans - y_pred)^2)
+  sqrt_pMSE[i] <- sqrt(mse)
+}
+
+#Plot
+plot(gammas, sqrt_pMSE, type = "b", pch = 19,
+     main = expression(sqrt(pMSE)~"vs"~gamma),
+     xlab = expression(gamma), ylab = expression(sqrt(pMSE)))
+
+```
+
+## Exercise (v)
+
+```{r}
+set.seed(321)
+N <- nrow(data_norush_spring)
+n_train <- floor(0.8 * N)
+gammas <- seq(0.5, 2.0, by = 0.1)
+
+par(mfrow = c(2, 5))
+for (rep in 1:10) {
+  ind_train <- sample(1:N, n_train)
+  train <- data_norush_spring[ind_train, ]
+  test  <- data_norush_spring[-ind_train, ]
+  
+  sqrt_pMSE <- numeric(length(gammas))
+  for (i in seq_along(gammas)) {
+    g <- gammas[i]
+    fit <- lm(y_trans ~ I(hum^g), data = train)
+    y_pred <- predict(fit, newdata = data.frame(hum = test$hum))
+    sqrt_pMSE[i] <- sqrt(mean((test$y_trans - y_pred)^2))
+  }
+  
+  plot(gammas, sqrt_pMSE, type = "b", pch = 19,
+       main = paste("Replication", rep),
+       xlab = expression(gamma), ylab = expression(sqrt(pMSE)))
+}
+
+```
+
+## Exercise (vi)
+
+```{r}
+
+set.seed(321)
+beta0_star <- coef(m2)[1]
+beta1_star <- coef(m2)[2]
+s <- summary(m2)$sigma
+
+x <- data_norush_spring$hum
+n <- length(x)
+B <- 2000
+
+cover_beta0 <- logical(B)
+cover_beta1 <- logical(B)
+
+for (b in 1:B) {
+  y_new <- beta0_star + beta1_star * x + rnorm(n, 0, s)
+  fit <- lm(y_new ~ x)
+  ci <- confint(fit, level = 0.80)
+  cover_beta0[b] <- (beta0_star >= ci[1,1] & beta0_star <= ci[1,2])
+  cover_beta1[b] <- (beta1_star >= ci[2,1] & beta1_star <= ci[2,2])
+}
+
+prop_beta0 <- mean(cover_beta0)
+prop_beta1 <- mean(cover_beta1)
+
+prop_beta0
+prop_beta1
+
+```
